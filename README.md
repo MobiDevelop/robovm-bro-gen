@@ -7,6 +7,7 @@
  * libclang 3.3+ (will use the one from Xcode if installed)
  * Ruby
  * Ruby FFI
+ * Ruby ffi-clang 0.3.0 (`gem install ffi-clang -v 0.3.0`)
 
 *Note about Ruby FFI*: If you get clang compiler errors when trying to install the FFI gem try the following:
 ```
@@ -18,8 +19,6 @@ sudo ARCHFLAGS=-Wno-error=unused-command-line-argument-hard-error-in-future gem 
 ```
 git clone git://github.com/MobiDevelop/robovm-bro-gen.git
 cd robovm-bro-gen
-git submodule init
-git submodule update
 ```
 
 ## Usage
