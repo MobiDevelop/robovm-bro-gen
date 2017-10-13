@@ -232,46 +232,60 @@ module Bro
         @@simple_block_types_anotat = {'@MachineSizedUInt long' => '@MachineSizedUInt',
             '@MachineSizedSInt long' => '@MachineSizedSInt', '@MachineSizedFloat double' => '@MachineSizedFloat'}
         def java_name
+            res = java_name_ex()
+            return res[0] + ' ' + res[1]
+        end
+
+        # modified to return array tuple to be able create block type param inside block
+        def java_name_ex
             if @return_type.is_a?(Builtin) && @return_type.name == 'void'
                 if @param_types.empty?
-                    '@Block Runnable'
+                    ['@Block', 'Runnable']
                 elsif @param_types.size == 1 && @param_types[0].is_a?(Builtin) && @@simple_block_types[@param_types[0].name]
-                    "@Block Void#{@param_types[0].name.capitalize}Block"
+                    ["@Block", "Void#{@param_types[0].name.capitalize}Block"]
                 elsif @param_types.size <= 6
-                    by_val_params = @param_types.map { |e| @model.is_byval_type?(e) ? '@ByVal' : '' }.join(",")
+                    by_val_params = to_by_val_params(@param_types).join(",")
                     by_val_mark = ''
                     by_val_mark = "(\"(#{by_val_params})\")" if !by_val_params.gsub(',', '').empty?
-                    "@Block#{by_val_mark} VoidBlock#{@param_types.size}<" + @param_types.map { |e| to_java_name(e) }.join(", ") + ">"
+                    ["@Block#{by_val_mark}", "VoidBlock#{@param_types.size}<" + @param_types.map { |e| to_java_name(e) }.join(", ") + ">"]
                 else
-                    'ObjCBlock'
+                    ['', 'ObjCBlock']
                 end
             else
                 if @param_types.size == 0 && @return_type.is_a?(Builtin) && @@simple_block_types[@return_type.name]
-                    "@Block #{@param_types[0].name.capitalize}Block"
+                    ["@Block", "#{@return_type.name.capitalize}Block"]
                 elsif @param_types.size <= 6
                     # besides @ByVal it would be required to replace @MachineSized anotated
                     # types with proper types and add these annotations to by_val_params
-                    by_val_params = @param_types.map {|e|
-                        if @model.is_byval_type?(e)
-                            '@ByVal'
-                        elsif e.is_a?(Builtin)
-                            @@simple_block_types_anotat[e.java_name] || ''
-                        else
-                            ''
-                        end
-                    }.join(",")
+                    by_val_params = to_by_val_params(@param_types).join(",")
                     by_val_mark = ''
                     by_val_mark = "(\"(#{by_val_params})\")" if !by_val_params.gsub(',', '').empty?
-                    "@Block#{by_val_mark} Block#{@param_types.size}<" + @param_types.map { |e| to_java_name(e) }.push(to_java_name(return_type)).join(", ") + ">"
+                    ["@Block#{by_val_mark}", "Block#{@param_types.size}<" + @param_types.map { |e| to_java_name(e) }.push(to_java_name(return_type)).join(", ") + ">"]
                 else
-                    'ObjCBlock'
+                    ['', 'ObjCBlock']
                 end
             end
         end
 
+        def to_by_val_params(p_types)
+            p_types.map {|e|
+                if @model.is_byval_type?(e)
+                    '@ByVal'
+                elsif e.is_a?(Block)
+                    '@Block'
+                elsif e.is_a?(Builtin)
+                    @@simple_block_types_anotat[e.java_name] || ''
+                else
+                    ''
+                end
+            }
+        end
+
         def to_java_name(type)
             if type.respond_to?('each') # Generic type
-                "#{type[0].java_name}<#{type[1].java_name}>"
+                "#{type[0].java_name}<" + type[1..-1].map{ |e| e.java_name}.join(", ") + ">"
+            elsif type.is_a?(Block)
+                type.java_name_ex()[1]
             else
                 @@simple_block_types[type.java_name] || type.java_name
             end
@@ -394,19 +408,26 @@ module Bro
             return AvailableAttribute.new source
         elsif source.start_with?('unavailable')
             return UnavailableAttribute.new source
-        elsif source.start_with?('__DARWIN_ALIAS_C') || source.start_with?('__DARWIN_ALIAS') ||
-           source == 'CF_IMPLICIT_BRIDGING_ENABLED' || source.start_with?('DISPATCH_') || source.match(/^(CF|NS)_RETURNS_RETAINED/) ||
-           source.match(/^(CF|NS)_INLINE$/) || source.match(/^(CF|NS)_FORMAT_FUNCTION.*/) || source.match(/^(CF|NS)_FORMAT_ARGUMENT.*/) ||
-           source == 'NS_RETURNS_INNER_POINTER' || source == 'NS_AUTOMATED_REFCOUNT_WEAK_UNAVAILABLE' || source == 'NS_REQUIRES_NIL_TERMINATION' ||
-           source == 'NS_ROOT_CLASS' || source == '__header_always_inline' || source.end_with?('_EXTERN') || source.end_with?('_EXTERN_CLASS') || source == 'NSObject' ||
-           source.end_with?('_CLASS_EXPORT') || source.end_with?('_EXPORT') || source == 'NS_REPLACES_RECEIVER' || source == '__objc_exception__' || source == 'OBJC_EXPORT' ||
-           source == 'OBJC_ROOT_CLASS' || source == '__ai' || source.end_with?('_EXTERN_WEAK') || source == 'NS_DESIGNATED_INITIALIZER' || source.start_with?('NS_EXTENSION_UNAVAILABLE_IOS') ||
-           source == 'NS_REQUIRES_PROPERTY_DEFINITIONS' || source.start_with?('DEPRECATED_MSG_ATTRIBUTE') || source == 'NS_REFINED_FOR_SWIFT' || source.start_with?('NS_SWIFT_NAME') ||
-           source.start_with?('NS_SWIFT_UNAVAILABLE') || source == 'UI_APPEARANCE_SELECTOR' || source == 'CF_RETURNS_NOT_RETAINED' || source == 'NS_REQUIRES_SUPER' || source == 'objc_designated_initializer' ||
-           source == 'availability' # clang extends property to methods and attaches this attr without proper specification, ignore it
-            return IgnoredAttribute.new source # TODO: lot of these macro are not present anymore as were expanded by pre-clang preprocessor call
+        # elsif source.start_with?('__DARWIN_ALIAS_C') || source.start_with?('__DARWIN_ALIAS') ||
+        #    source == 'CF_IMPLICIT_BRIDGING_ENABLED' || source.start_with?('DISPATCH_') || source.match(/^(CF|NS)_RETURNS_RETAINED/) ||
+        #    source.match(/^(CF|NS)_INLINE$/) || source.match(/^(CF|NS)_FORMAT_FUNCTION.*/) || source.match(/^(CF|NS)_FORMAT_ARGUMENT.*/) ||
+        #    source == 'NS_RETURNS_INNER_POINTER' || source == 'NS_AUTOMATED_REFCOUNT_WEAK_UNAVAILABLE' || source == 'NS_REQUIRES_NIL_TERMINATION' ||
+        #    source == 'NS_ROOT_CLASS' || source == '__header_always_inline' || source.end_with?('_EXTERN') || source.end_with?('_EXTERN_CLASS') || source == 'NSObject' ||
+        #    source.end_with?('_CLASS_EXPORT') || source.end_with?('_EXPORT') || source == 'NS_REPLACES_RECEIVER' || source == '__objc_exception__' || source == 'OBJC_EXPORT' ||
+        #    source == 'OBJC_ROOT_CLASS' || source == '__ai' || source.end_with?('_EXTERN_WEAK') || source == 'NS_DESIGNATED_INITIALIZER' || source.start_with?('NS_EXTENSION_UNAVAILABLE_IOS') ||
+        #    source == 'NS_REQUIRES_PROPERTY_DEFINITIONS' || source.start_with?('DEPRECATED_MSG_ATTRIBUTE') || source == 'NS_REFINED_FOR_SWIFT' || source.start_with?('NS_SWIFT_NAME') ||
+        #    source.start_with?('NS_SWIFT_UNAVAILABLE') || source == 'UI_APPEARANCE_SELECTOR' || source == 'CF_RETURNS_NOT_RETAINED' || source == 'NS_REQUIRES_SUPER' || source == 'objc_designated_initializer' ||
+        #    source == 'availability' ||  # clang extends property to methods and attaches this attr without proper specification, ignore it
+        #    source.start_with?('enum_extensibility') || # appeared in ios11
+        #    source.start_with?('ns_error_domain') || source == 'objc_returns_inner_pointer' || # appeared in ios11
+        #    source.start_with?('swift_') || # appeared in ios11, ignore all swift4 attr
+        #    source.start_with?('NS_OPTIONS') # TODO: there is a lot of such outputs once moved to ios11 due pre-processor workaround. currently just ignoring
+        #     return IgnoredAttribute.new source # TODO: lot of these macro are not present anymore as were expanded by pre-clang preprocessor call
         else
-            return UnsupportedAttribute.new source
+            # return UnsupportedAttribute.new source
+            # TODO: there is nothing special about all tese bunch of attributes listed in IgnoredAttribute
+            # and UnsupportedAttribute is just making lot of noise in log, just ignore them all
+            return IgnoredAttribute.new source
         end
     end
 
@@ -1735,15 +1756,29 @@ module Bro
                     type_name = $1
                     generic_name = $2.tr('* ', '').sub(/__kindof/, '').sub(/id<(.*)>/, '\1')
 
-                    resolve_generic = ['NSString', 'NSCopying', 'NSObject', 'KeyType', 'ObjectType', 'Class', ',', '<', '>'].all? { |n| !generic_name.include? n }
-
                     e = resolve_type_by_name(type_name)
-                    generic_type = resolve_type_by_name(generic_name) if resolve_generic
+                    valid_generics = false
+                    if e && e.pointer
+                        # work with generics
+                        generics = generic_name.split(',')
+                        generic_types = []
+                        generics.each do |g|
+                            valid_generics = ['NSCopying', 'KeyType', 'ObjectType', 'Class', '<', '>'].all? { |n| !g.include? n }
+                            break unless valid_generics
 
-                    resolve_generic &= generic_type.is_a?(ObjCClass) || generic_type.is_a?(Typedef) || generic_type.is_a?(Builtin) # TODO support categories
+                            if (g == 'id' || g == "NSObject")
+                                generic_types.push(Builtin.new("?"))
+                            else
+                                gtype = resolve_type_by_name(g)
+                                valid_generics &= gtype.is_a?(ObjCClass) || gtype.is_a?(Typedef) || gtype.is_a?(Builtin)
+                                break unless valid_generics
+                                generic_types.push(gtype)
+                            end
+                        end
+                    end
 
-                    if resolve_generic && generic_type && e && e.pointer
-                        [e, generic_type]
+                    if valid_generics
+                        [e] + generic_types
                     else
                         if @conf_typedefs[gen_name]
                             resolve_type_by_name gen_name
@@ -1939,7 +1974,7 @@ module Bro
             elsif type.is_a?(Array)
                 "@Array({#{type.dimensions.join(', ')}}) #{type.java_name}"
             elsif type.respond_to?('each') # Generic type
-                "#{type[0].java_name}<#{type[1].java_name}>"
+                "#{type[0].java_name}<" + type[1..-1].map{ |e| e.java_name}.join(", ") + ">"
             else
                 type.java_name
              end
@@ -2355,7 +2390,12 @@ end
 def property_to_java(model, owner, prop, props_conf, seen, adapter = false)
     return [] if prop.is_outdated?
 
-    conf = model.get_conf_for_key(prop.name, props_conf) || {}
+    # if static -- try to get configuration for it
+    conf = prop.is_static? ? model.get_conf_for_key("+" + prop.name, props_conf) : nil
+    # sanity check for regexp, as + can get into name, just for compatibility mode
+    conf = nil if conf && ((!conf['getter'].nil? && conf['getter'].start_with?('+')) || (!conf['setter'].nil? && conf['setter'].start_with?('+')) || (!conf['name'].nil? && conf['name'].start_with?('+')))
+    # if not found try to look for regural one (comp mode)
+    conf ||= model.get_conf_for_key(prop.name, props_conf) || {}
 
     if !conf['exclude']
         name = conf['name'] || prop.name
@@ -2406,7 +2446,8 @@ def property_to_java(model, owner, prop, props_conf, seen, adapter = false)
         annotations = conf['annotations'] && !conf['annotations'].empty? ? conf['annotations'].uniq.join(' ') : nil
 
         lines = []
-        unless seen["-#{prop.getter_name}"]
+        seen_prefix = !static.empty? ? '+' : '-'
+        unless seen["#{seen_prefix}#{prop.getter_name}"]
             model.push_availability(prop, lines)
             lines << annotations.to_s if annotations
 
@@ -2416,10 +2457,10 @@ def property_to_java(model, owner, prop, props_conf, seen, adapter = false)
                          "@Property(selector = \"#{prop.getter_name}\")"
                      end
             lines << "#{[visibility, static, native, marshaler, generics_s, type[0], getter].find_all { |e| !e.empty? }.join(' ')}(#{parameters_s})#{body}"
-            seen["-#{prop.getter_name}"] = true
+            seen["#{seen_prefix}#{prop.getter_name}"] = true
         end
 
-        if !prop.is_readonly? && !conf['readonly'] && !seen["-#{prop.setter_name}"]
+        if !prop.is_readonly? && !conf['readonly'] && !seen["#{seen_prefix}#{prop.setter_name}"]
             param_types.push([type[0], nil, 'v'])
             parameters_s = param_types.map { |p| "#{p[0]} #{p[2]}" }.join(', ')
             model.push_availability(prop, lines)
@@ -2440,7 +2481,7 @@ def property_to_java(model, owner, prop, props_conf, seen, adapter = false)
             marshaler = marshaler + ' ' if marshaler != ''
 
             lines << "#{[visibility, static, native, generics_s, 'void', setter].find_all { |e| !e.empty? }.join(' ')}(#{marshaler}#{parameters_s})#{body}"
-            seen["-#{prop.setter_name}"] = true
+            seen["#{seen_prefix}#{prop.setter_name}"] = true
         end
         lines
     else
@@ -2448,7 +2489,7 @@ def property_to_java(model, owner, prop, props_conf, seen, adapter = false)
     end
 end
 
-def method_to_java(model, owner_name, owner, method, methods_conf, seen, adapter = false)
+def method_to_java(model, owner_name, owner, method, methods_conf, seen, adapter = false, prot_as_class = false)
     return [[], []] if method.is_outdated? || method.is_a?(Bro::ObjCClassMethod) && owner.is_a?(Bro::ObjCProtocol)
 
     return [[], []] if owner.is_a?(Bro::ObjCProtocol) && is_method_like_init?(owner, method)
@@ -2471,6 +2512,9 @@ def method_to_java(model, owner_name, owner, method, methods_conf, seen, adapter
         $stderr.puts "WARN: Ignoring variadic method '#{owner.name}.#{method.name}(#{param_types.join(', ')})' at #{Bro.location_to_s(method.location)}"
         [[], []]
     elsif !conf['exclude']
+        # is used to produce hints for faster yaml file contructinon
+        suggestion_data = nil
+
         ret_type = get_generic_type(model, owner, method, method.return_type, 0, conf['return_type'])
         params_conf = conf['parameters'] || {}
         param_types = method.parameters.each_with_object([]) do |p, l|
@@ -2487,6 +2531,9 @@ def method_to_java(model, owner_name, owner, method, methods_conf, seen, adapter
                 name = method.name[0..-2]
             else
                 name = method.name.tr(':', '$')
+                # report this case in suggestion_data to point dev that this method
+                # will receive $$ in the name
+                suggestion_data = [full_name, name] if !conf['trim_after_first_colon'] && name.count('$') > 0
             end
             if method.parameters.empty? && method.return_type.kind != :type_void && conf['property']
                 base = name[0, 1].upcase + name[1..-1]
@@ -2544,6 +2591,9 @@ def method_to_java(model, owner_name, owner, method, methods_conf, seen, adapter
 
         annotations = conf['annotations'] && !conf['annotations'].empty? ? conf['annotations'].uniq.join(' ') : nil
         static_constructor = !conf['constructor'].nil? && conf['constructor'] == true && is_static
+        # introduced constructor wrapper to be able solve cases when there are two init* mathods with same arguments
+        # which makes impossible to create two constructors in java
+        static_constructor_name = is_static ? nil : conf['static_constructor_name']
 
         if conf['throws']
             error_type = 'NSError'
@@ -2560,7 +2610,7 @@ def method_to_java(model, owner_name, owner, method, methods_conf, seen, adapter
             end
             params_s = params.length.zero? ? 'ptr' : "#{params.join(', ')}, ptr"
 
-            unless owner.is_a?(Bro::ObjCClass) && is_init?(owner, method) || static_constructor
+            unless owner.is_a?(Bro::ObjCProtocol) && prot_as_class == false || owner.is_a?(Bro::ObjCClass) && is_init?(owner, method) || static_constructor
                 model.push_availability(method, method_lines)
 
                 method_lines << annotations.to_s if annotations
@@ -2572,13 +2622,14 @@ def method_to_java(model, owner_name, owner, method, methods_conf, seen, adapter
                 method_lines << "   if (ptr.get() != null) { throw new #{conf['throws']}(ptr.get()); }"
                 method_lines << '   return result;' unless ret == ''
                 method_lines << '}'
-              end
+            end
 
-            visibility = 'private'
+            visibility = 'private' unless owner.is_a?(Bro::ObjCProtocol) && prot_as_class == false
         end
 
-        if (is_static && static_constructor)
-            ret_type[0] = "@Pointer long"
+        if ((is_static && static_constructor) || (is_init?(owner, method) && !static_constructor_name.nil?))
+            # do not override ret_type if it was customized through config
+            ret_type[0] = "@Pointer long" unless conf['return_type']
             visibility = 'protected'
         end
 
@@ -2604,7 +2655,25 @@ def method_to_java(model, owner_name, owner, method, methods_conf, seen, adapter
             model.push_availability(method, constructor_lines)
             constructor_lines << annotations.to_s if annotations
 
-            if (is_init?(owner, method))
+            if is_init?(owner, method) && !static_constructor_name.nil?
+                # creating static wrapper to call corresponding init
+                constructor_lines << "@Method(selector = \"#{method.name}\")"
+                if conf['throws']
+                    constructor_lines << "#{constructor_visibility} static #{generics_s.size>0 ? ' ' + generics_s : ''} #{owner_name} #{static_constructor_name}(#{new_parameters_s}) throws #{conf['throws']}  {"
+                    constructor_lines << "   #{owner_name} res = new #{owner_name}((SkipInit) null);"
+                    constructor_lines << "   #{error_type}.#{error_type}Ptr ptr = new #{error_type}.#{error_type}Ptr();"
+                    constructor_lines << "   res.initObject(res.#{name}(#{params_s}));"
+                    constructor_lines << "   if (ptr.get() != null) { throw new #{conf['throws']}(ptr.get()); }"
+                    constructor_lines << "   return res;"
+                    constructor_lines << "}"
+                else
+                    constructor_lines << "#{constructor_visibility} static #{generics_s.size>0 ? ' ' + generics_s : ''} #{owner_name} #{static_constructor_name}(#{parameters_s}) {"
+                    constructor_lines << "   #{owner_name} res = new #{owner_name}((SkipInit) null);"
+                    constructor_lines << "   res.initObject(res.#{name}(#{args_s}));"
+                    constructor_lines << "   return res;"
+                    constructor_lines << "}"
+                end
+            elsif is_init?(owner, method)
                 constructor_lines << "@Method(selector = \"#{method.name}\")"
                 if conf['throws']
                     constructor_lines << "#{constructor_visibility}#{!generics_s.empty? ? ' ' + generics_s : ''} #{owner_name}(#{new_parameters_s}) throws #{conf['throws']} {"
@@ -2635,7 +2704,7 @@ def method_to_java(model, owner_name, owner, method, methods_conf, seen, adapter
             end
         end
         seen[full_name] = true
-        [method_lines, constructor_lines]
+        [method_lines, constructor_lines, suggestion_data]
     else
         [[], []]
     end
@@ -2742,7 +2811,7 @@ end
 
 
 $mac_version = nil
-$ios_version = '10.3'
+$ios_version = '11.0'
 $target_platform = 'ios'
 xcode_dir = `xcode-select -p`.chomp
 sysroot = "#{xcode_dir}/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS#{$ios_version}.sdk"
@@ -2760,6 +2829,7 @@ def_bits_template = IO.read("#{templates_dir}/bits_template.java")
 def_protocol_template = IO.read("#{templates_dir}/protocol_template.java")
 def_value_enum_template = IO.read("#{templates_dir}/value_enum_template.java")
 def_value_dictionary_template = IO.read("#{templates_dir}/value_dictionary_template.java")
+def_nserror_enum_template = IO.read("#{templates_dir}/nserror_enum_template.java")
 global = YAML.load_file("#{script_dir}/global.yaml")
 
 ARGV[1..-1].each do |yaml_file|
@@ -2886,6 +2956,21 @@ ARGV[1..-1].each do |yaml_file|
     # attributes and enum/types definitions
     main_file = clang_preprocess(File.join(header_root, headers[0]), clang_preprocess_args)
 
+    # START of potential support code block
+    # this map will contain all potential entries that are missing (such as class is not covered in yaml)
+    # or has be updated (such as method name generated with $$$)
+    $potential_new_entries = {}
+    def add_potential_new_entry(entry, data)
+        exists = $potential_new_entries.key?(entry)
+        bundle = exists ? $potential_new_entries[entry] : nil
+        if data
+            bundle ||= []
+            bundle.push(data)
+        end
+        $potential_new_entries[entry] = bundle if !exists
+    end
+    # END of potential support code block
+
     # now translate pre-processed
     translation_unit = index.parse_translation_unit(main_file, clang_args, [], detailed_preprocessing_record: true)
 
@@ -2943,10 +3028,13 @@ ARGV[1..-1].each do |yaml_file|
             end
             data['imports'] = imports_s
             data['javadoc'] = "\n" + model.push_availability(enum).join("\n") + "\n"
-            data['template'] = bits ? def_bits_template : def_enum_template
+            data['template'] = bits ? def_bits_template : (c['nserror'] == true ? def_nserror_enum_template : def_enum_template)
             template_datas[java_name] = data
         #      merge_template(target_dir, package, java_name, bits ? def_bits_template : def_enum_template, data)
         elsif model.is_included?(enum) && (!c || !c['exclude'])
+            # save to potential new entry
+            add_potential_new_entry(enum, nil)
+
             # Possibly an enum with values that should be turned into constants
             potential_constant_enums.push(enum)
             $stderr.puts "WARN: Turning the enum #{enum.name} with first value #{enum.values[0].name} into constants" unless enum.name == ''
@@ -2955,6 +3043,9 @@ ARGV[1..-1].each do |yaml_file|
 
     model.structs.find_all { |e| !e.name.empty? }.each do |struct|
         c = model.get_class_conf(struct.name)
+        # save to potential new entry
+        add_potential_new_entry(struct, nil) if !c && model.is_included?(struct) && !struct.is_outdated?
+
         if c && !c['exclude'] && !struct.is_outdated?
             name = c['name'] || struct.name
             template_datas[name] = struct.is_opaque? ? opaque_to_java(model, {}, name, c) : struct_to_java(model, {}, name, struct, c)
@@ -2962,11 +3053,16 @@ ARGV[1..-1].each do |yaml_file|
     end
     model.typedefs.each do |td|
         c = model.get_class_conf(td.name)
+
+        # save to potential new entry
+        add_potential_new_entry(td, nil) if !c && td.struct && model.is_included?(td) && !td.is_outdated?
+
         next unless c && !c['exclude']
         struct = td.struct
         if struct && struct.is_opaque?
             struct = model.structs.find { |e| e.name == td.struct.name } || td.struct
         end
+
         name = c['name'] || td.name
         template_datas[name] = !struct || struct.is_opaque? ? opaque_to_java(model, {}, name, c) : struct_to_java(model, {}, name, struct, c)
     end
@@ -3285,7 +3381,7 @@ ARGV[1..-1].each do |yaml_file|
 
                 java_parameters[-1] = "#{error_type}.#{error_type}Ptr error"
                 visibility = 'private'
-              end
+            end
 
             model.push_availability(f, lines)
             lines << annotations.to_s if annotations
@@ -3349,6 +3445,9 @@ ARGV[1..-1].each do |yaml_file|
     members = {}
     (model.objc_classes + model.objc_protocols).each do |cls|
         c = cls.is_a?(Bro::ObjCClass) ? model.get_class_conf(cls.name) : model.get_protocol_conf(cls.name)
+        # before skipping check if this is potentialy missing class or protocol from yaml file
+        add_potential_new_entry(cls, nil) if !c && cls.is_available? && !cls.is_opaque? && !cls.is_outdated? && model.is_included?(cls)
+
         next unless c && !c['exclude'] && cls.is_available? && !cls.is_outdated?
         owner = c['name'] || cls.java_name
         members[owner] = members[owner] || { owner: cls, owner_name: owner, members: [], conf: c }
@@ -3453,6 +3552,23 @@ ARGV[1..-1].each do |yaml_file|
         l
     end
 
+    # list all protocols including inherited ones. it is needed to create adapter in case there is several parent protocols
+    def protocol_list_deep(model, protocols, conf, l = [])
+        if conf['protocols']
+            l += conf['protocols']
+        else
+            protocols.each do |name|
+                c = model.get_protocol_conf(name)
+                next unless c
+                pr = model.objc_protocols.find { |p| p.name == name }
+                next if !pr || l.include?(pr.java_name)
+                l.push(pr.java_name)
+                protocol_list_deep(model, pr.protocols, c, l)
+            end
+        end
+        l
+    end
+
     def protocol_list_s(model, keyword, protocols, conf)
         l = protocol_list(model, protocols, conf)
         l.empty? ? nil : (keyword + ' ' + l.join(', '))
@@ -3514,20 +3630,60 @@ ARGV[1..-1].each do |yaml_file|
         owner_name = interface_name + 'Adapter'
         methods_lines = []
         properties_lines = []
-        h[:members].each do |(members, c)|
+
+        # in case there is more than one protocol being inherited this addapter can't
+        # inherit other arapters but has to implement all methods of all protocols it inherits
+        prot_members = h[:members]
+        protocols = protocol_list(model, owner.protocols, c).find_all { |e| e != 'NSObjectProtocol' }
+        parent_adapter = nil
+        # check for one that is sutable for adapter s
+        protocols.each do |name|
+            # check if there is adapter exists
+            protc = model.get_protocol_conf(name)
+            if protc && !protc['skip_adapter']
+                parent_adapter = name
+                break
+            end
+        end
+
+        # refilter protocols
+        protocols = protocols.find_all { |e| e != parent_adapter } if parent_adapter
+
+        # adapter is not found has to implement everything event if there is only one protocol
+        if protocols.length
+            protocols_methods = []
+            protocols_deep = protocol_list_deep(model, protocols, {}).find_all { |e| e != 'NSObjectProtocol' }
+            protocols_deep.each do |name|
+                protc = model.get_protocol_conf(name)
+                prot = model.objc_protocols.find { |p| p.name == name } if protc
+                next unless prot && protc
+
+                if !parent_adapter && !protc['skip_adapter']
+                    # use this protocol as adapter one
+                    parent_adapter = prot.name
+                else
+                    # use this protocol to implement all methods
+                    protocols_methods.push([prot.instance_methods + prot.class_methods + prot.properties, protc])
+                end
+            end
+            prot_members = prot_members + protocols_methods
+        end
+
+
+        prot_members.each do |(members, c)|
             members.find_all { |m| m.is_a?(Bro::ObjCMethod) && m.is_available? }.each do |m|
-                a = method_to_java(model, owner_name, owner, m, c['methods'] || {}, {}, true)
+                a = method_to_java(model, owner_name, owner, m, c['methods'] || {}, {}, true, ['class'])
                 methods_lines.concat(a[0])
             end
-            members.find_all { |m| m.is_a?(Bro::ObjCProperty) && m.is_available? }.each do |p|
+            # TODO: temporaly don't add static properties to interfaces
+            members.find_all { |m| m.is_a?(Bro::ObjCProperty) && m.is_available? && !(m.is_static? && owner.is_a?(Bro::ObjCProtocol))}.each do |p|
                 properties_lines.concat(property_to_java(model, owner, p, c['properties'] || {}, {}, true))
             end
         end
 
         data = template_datas[owner_name] || {}
         data['name'] = owner_name
-        protocols = protocol_list(model, owner.protocols, c).find_all { |e| e != 'NSObjectProtocol' }
-        data['extends'] = protocols.empty? ? 'NSObject' : "#{protocols[0]}Adapter"
+        data['extends'] = parent_adapter ? "#{parent_adapter}Adapter" : 'NSObject'
         data['implements'] = "implements #{interface_name}"
         methods_s = methods_lines.flatten.join("\n    ")
         data['methods'] = (data['methods'] || '') + "\n    #{methods_s}\n    "
@@ -3546,11 +3702,18 @@ ARGV[1..-1].each do |yaml_file|
         properties_lines = []
         h[:members].each do |(members, c)|
             members.find_all { |m| m.is_a?(Bro::ObjCMethod) && m.is_available? }.each do |m|
-                a = method_to_java(model, owner_name, owner, m, c['methods'] || {}, seen)
+                a = method_to_java(model, owner_name, owner, m, c['methods'] || {}, seen, false, c['class'])
                 methods_lines.concat(a[0])
                 constructors_lines.concat(a[1])
+
+                # add potential information about method if it has more than
+                # one argument and it is name is not overridden in yaml.
+                # which will lead to $ signs in name so this will cost another
+                # run of bro-gen with updated yaml file.
+                add_potential_new_entry(owner, a[2]) if a.length > 2 && a[2] != nil && a[2].length > 0
             end
-            members.find_all { |m| m.is_a?(Bro::ObjCProperty) && m.is_available? }.each do |p|
+            # TODO: temporaly don't add static properties to interfaces
+            members.find_all { |m| m.is_a?(Bro::ObjCProperty) && m.is_available? && !(m.is_static? && owner.is_a?(Bro::ObjCProtocol))}.each do |p|
                 properties_lines.concat(property_to_java(model, owner, p, c['properties'] || {}, seen))
             end
         end
@@ -3606,4 +3769,110 @@ ARGV[1..-1].each do |yaml_file|
         end
         merge_template(target_dir, package, owner, data['template'] || def_class_template, data)
     end
+
+    #
+    # dump suggestions for potentialy new classes/enum/protocols
+    if !$potential_new_entries.empty?
+      puts "\n\n\n"
+      puts "\# YAML file pottentialy missing entries suggestions\n"
+      puts "\n\n\n"
+
+      # dumping enums
+      potential_enums = $potential_new_entries.select{ |key, value| key.is_a?(Bro::Enum ) || key.is_a?(Bro::EnumValue)  }
+      if !potential_enums.empty?
+          puts "#enums:"
+          puts "\# potentialy missing enums"
+          puts "#enums:"
+          potential_enums.each do |enum, data|
+
+              enum_params = []
+              enum_comments = []
+              enum_members = enum.values.collect {|e| e.name}
+              enum_comments.push( "since #{enum.since}" ) if enum.since
+
+              # get common prefix
+              if !enum_members.empty?
+                  enum_members.push(enum.name) if enum_members.length == 1 && !enum.name.empty?
+                  if enum_members.length == 1
+                      prefix = enum_members[0]
+                      enum_comments.push("!Prefix invalid!")
+                  else
+                      min, max = enum_members.minmax
+                      idx = min.size.times{|i| break i if min[i] != max[i]}
+                      prefix = min[0...idx]
+                  end
+                  prefix = "" if !enum.name.empty? && prefix.start_with?(enum.name)
+                  enum_params.push("prefix: #{prefix}") if !prefix.empty?
+              end
+
+              enum_params.push("first: #{enum_members[0]}") if enum.name.empty?
+              enum_params = "{" + enum_params.join(", ") + "}"
+              enum_comments = enum_comments.empty? ? "" : " \#" + enum_comments.join(", ")
+              puts "    #{enum.name.empty? ? 'UNNAMED' : enum.name}: #{enum_params}#{enum_comments}"
+          end
+          puts "\n\n\n"
+      end
+
+      # dumping structs
+      potential_structs = $potential_new_entries.select{ |key, value| key.is_a?(Bro::Struct) }
+      if !potential_structs.empty?
+          puts "\# potentialy missing structs"
+          potential_structs.each do |struct, data|
+              puts "    #{struct.name}: {}" + (struct.since  ? " \#since #{struct.since}" : "")
+          end
+          puts "\n\n\n"
+      end
+
+      # duming typedefs as structs        struct = td.struct
+      potential_typedefs = $potential_new_entries.select{ |key, value| key.is_a?(Bro::Typedef) }
+      if !potential_typedefs.empty?
+          puts "\# potentialy missing typedefs"
+          potential_typedefs.each do |td, data|
+              struct = td.struct
+              if struct && struct.is_opaque?
+                  struct = model.structs.find { |e| e.name == td.struct.name } || td.struct
+              end
+              next if !struct || struct.is_opaque?
+              puts "    #{td.name}: {}" + (td.since  ? " \#since #{td.since}" : "")
+          end
+          puts "\n\n\n"
+      end
+
+      # dumping classes and protocols
+      potential_classes_protos = [
+          ["classes", $potential_new_entries.select{|key, value| key.is_a?(Bro::ObjCClass)}],
+          ["protocols", $potential_new_entries.select{|key, value| key.is_a?(Bro::ObjCProtocol)}]
+      ]
+      potential_classes_protos.each do |title, entries|
+          next if entries.empty?
+
+          # convert to array and sort to have values to be updated first
+          puts "\# #{title} to be updated:"
+          puts "#{title}:"
+          entries.each do |cls, data|
+              # find all method information
+              bad_methods = data
+              if bad_methods == nil
+                  # it is a new class/proto and information about it has to be extracted
+                  (cls.instance_methods + cls.class_methods).find_all { |m| m.is_a?(Bro::ObjCMethod) && m.is_available? }.each do |m|
+                      next unless m.name.count(':') > 1
+                      bad_methods ||= []
+                      full_name = (m.is_a?(Bro::ObjCClassMethod) ? '+' : '-') + m.name
+                      bad_methods.push([full_name, m.name.tr(':', '$')])
+                  end
+              end
+
+              puts "    #{cls.name}:" + (!bad_methods ? " {}" : "") + (cls.since  ? " \#since #{cls.since}" : "")
+              next unless bad_methods
+              puts "        methods:"
+              bad_methods.each do |full_name, name|
+                  puts "            '#{full_name}':"
+                  puts "                \#trim_after_first_colon: true"
+                  puts "                name: #{name}"
+              end
+          end
+          puts "\n\n\n"
+      end
+    end
+    # end of dumping suggestions
 end
